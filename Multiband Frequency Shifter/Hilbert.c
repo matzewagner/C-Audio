@@ -38,7 +38,7 @@ float Hil_real(float in, H_coefficients *hc) {
             xn1 = yn1;
         }
         float result = yn1;
-        return result * 0.8;
+        return result * 0.99;
 }
 
 float Hil_imaginary(float in, H_coefficients *hc) {
@@ -53,5 +53,5 @@ float Hil_imaginary(float in, H_coefficients *hc) {
             xn2 = yn2;
         }
         float result = yn2;
-        return result * 0.8;
+        return result * 0.99;
 }

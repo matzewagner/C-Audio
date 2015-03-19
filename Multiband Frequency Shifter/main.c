@@ -9,8 +9,9 @@
 // Big thanks to Joseph Tilbian and Andrés Cabrera for help and advice!!!
 
 #include <stdio.h>
-#include <portaudio.h>
+#include <stdlib.h>
 #include <math.h>
+#include <portaudio.h>
 #include <sndfile.h>
 
 #include "Hilbert.h"
@@ -19,7 +20,7 @@
 #define SR 44100
 #define TABLE_SIZE 4096
 #define FRAMES_PER_BUFFER 256
-#define DUR 10.0
+#define DUR 15.0
 
 #ifndef M_PI
 #define M_PI 3.14159265
@@ -47,7 +48,8 @@ typedef struct
     // Hilbert coefficients
     H_coefficients coef_Hil1, coef_Hil2, coef_Hil3, coef_Hil4;
 
-    double * bufferPointer;
+    double * inputBufferPointer;
+    double * outBufferPointer;
     SNDFILE *sndFile;
     SF_INFO sfInfo;
     int position;
@@ -69,6 +71,10 @@ static int paCallback( const void *inputBuffer,
     float lo_out, lo_mid_out, hi_mid_out, hi_out;
     float randMax[4];
     float func_out;
+    int *cursor;
+    int thisSize = framesPerBuffer;
+    int thisRead;
+
     unsigned int i, j;
     float input;
     (void) inputBuffer; /* Prevent unused variable warning. */
@@ -88,32 +94,11 @@ static int paCallback( const void *inputBuffer,
         }
 
 //        input = data->sine[(int)data->sinPhase[0]];
-        input = *in++;
+        while (*(data->inputBufferPointer) >= data->sfInfo.frames) {
+            *(data->inputBufferPointer) -= data->sfInfo.frames;
+        }
+        input = *(data->inputBufferPointer++);
 
-       // Linkwitz_Riley Test
-//     // split signal into 2 parts
-//     pre_lo = LP_LRFilter(input, &data->coef_LP_pre, &data->LP_pre_s1, &data->LP_pre_s2);
-//     pre_hi = HP_LRFilter(input, &data->coef_HP_pre, &data->HP_pre_s1, &data->HP_pre_s2);
-//     // split signal further into lo
-//     lo = LP_LRFilter(pre_lo, &data->coef_LP_lo, &data->LP_lo_s1, &data->LP_lo_s2);
-//     lo_sine = lo * data->sine[(int)data->cosPhase[0]];
-//     lo_cosine = lo * data->sine[(int)data->sinPhase[0]];
-//     lo_out = lo_sine + lo_cosine;
-//     // split signal further into lo_mid
-//     lo_mid =  HP_LRFilter(pre_lo, &data->coef_HP_lo_mid, &data->HP_lo_mid_s1, &data->HP_lo_mid_s2);
-//     lo_mid_sine = lo_mid * data->sine[(int)data->cosPhase[1]];
-//     lo_mid_cosine = lo_mid * data->sine[(int)data->sinPhase[1]];
-//     lo_mid_out = lo_mid_sine + lo_mid_cosine;
-//     // split signal further into hi_mid
-//     hi_mid = LP_LRFilter(pre_hi, &data->coef_LP_hi_mid, &data->LP_hi_mid_s1, &data->LP_hi_mid_s2);
-//     hi_mid_sine = hi_mid * data->sine[(int)data->cosPhase[2]];
-//     hi_mid_cosine = hi_mid * data->sine[(int)data->sinPhase[2]];
-//     hi_mid_out = hi_mid_sine + hi_mid_cosine;
-//     // split signal further into hi
-//     hi = HP_LRFilter(pre_hi, &data->coef_HP_hi, &data->HP_hi_s1, &data->HP_hi_s2);
-//     hi_sine = hi * data->sine[(int)data->cosPhase[3]];
-//     hi_cosine = hi * data->sine[(int)data->sinPhase[3]];
-//     hi_out = hi_sine + hi_cosine;
 
         // split signal into 2 parts
         pre_lo = LP_LRFilter(input, &data->coef_LP_pre, &data->LP_pre_s1, &data->LP_pre_s2);
@@ -139,14 +124,15 @@ static int paCallback( const void *inputBuffer,
         hi_cosine = Hil_imaginary(hi, &data->coef_Hil4) * data->sine[(int)data->sinPhase[3]];
         hi_out = hi_sine + hi_cosine;
 
-       *out++ = lo_out + lo_mid_out + hi_mid_out + hi_out;
-//      func_out = Hil_real(data->sine[(int)data->sinPhase[0]], &data->coef_Hil1);
-//      *out++ = lo + lo_mid + hi_mid + hi;
-//      *out++ = hi;
-//      *out++ = data->sine[(int)data->sin1Phase];
+        *out++ = lo_out + lo_mid_out + hi_mid_out + hi_out;
+//          *out++ = lo_out + lo_mid_out + hi_mid_out + hi_out;
+//          func_out = Hil_real(data->sine[(int)data->sinPhase[0]], &data->coef_Hil1);
+//          *out++ = lo + lo_mid + hi_mid + hi;
+//          *out++ = hi;
+//          *out++ = data->sine[(int)data->sin1Phase];
 
         // write output to buffer for libsndfile
-        *(data->bufferPointer++) = lo_out + lo_mid_out + hi_mid_out + hi_out;
+        *(data->outBufferPointer++) = lo_out + lo_mid_out + hi_mid_out + hi_out;
     }
     return paNoError;
 }
@@ -159,18 +145,33 @@ int main(void)
     paData data;
 
     int totalSamples = (int)(SR*DUR);
-    double buffer[totalSamples];
+    double outBuffer[totalSamples];
+    int i;
 
-    double shift_lo = 30.0;
-    double shift_lo_mid = 50.0;
-    double shift_hi_mid = 70.0;
-    double shift_hi = 110.0;
+    // initialize file reader
+    data.position = 0;
+    data.sfInfo.format = 0;
+    data.sndFile = sf_open("crash.wav", SFM_READ, &data.sfInfo);
+    if (!data.sndFile) {
+        printf("error opening file\n");
+        return 1;
+    }
+    // read file into buffer;
+    int numFrames = data.sfInfo.frames;
+    double inputBuffer[numFrames];
+    sf_readf_double(data.sndFile, inputBuffer, numFrames);
+    data.inputBufferPointer = inputBuffer;
 
+    // set shift parameters
+    double shift_lo = 0.0;
+    double shift_lo_mid = 500.0;
+    double shift_hi_mid = 0.0;
+    double shift_hi = 0.0;
+    // set filter parameters
     double first_split_freq = 1000.0;
     double second_lo_split_freq = 400.0;
     double second_hi_split_freq = 2000.0;
 
-    int i;
     // set LP and HP filter samples to 0
     for (i=0; i<2; i++) {
       data.LP_pre_s1.x[i] = 0;
@@ -242,11 +243,11 @@ int main(void)
         data.cosine[i] = (float)cos( ((double)i/(double)TABLE_SIZE)*M_PI*2.0);
     }
 
-    // libsndfile buffer
+    // libsndfile outBuffer
     for (i=0; i<totalSamples; i++) {
-       buffer[i] = 0;
+       outBuffer[i] = 0;
     }
-    data.bufferPointer = buffer;
+    data.outBufferPointer = outBuffer;
 
     SF_INFO sfinfo;
     sfinfo.channels = 1;
@@ -294,7 +295,7 @@ int main(void)
     printf("\nHello World!\n");
 
     // write buffer to file
-    sf_writef_double(sf, buffer, totalSamples);
+    sf_writef_double(sf, outBuffer, totalSamples);
 
     return 0;
 }
